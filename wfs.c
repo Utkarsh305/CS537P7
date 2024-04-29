@@ -15,6 +15,8 @@ struct wfs_sb *sb;
 int *inode_bitmap;
 int *data_bitmap;
 
+
+
 void set_inode_bitmap(int inode_num, bool value) {
     int index = inode_num / 32;
     int bit = inode_num % 32;
@@ -31,6 +33,15 @@ bool get_inode_bitmap(int inode_num) {
     return inode_bitmap[index] & (1 << bit);
 }
 
+
+void printInodeBitmap() {
+    printf("inode bitmap:\n");
+    for(int i = 0; i < sb->num_inodes; i++) {
+        printf("%d", get_inode_bitmap(i));
+    }
+    printf("\n");
+}
+
 void set_data_bitmap(int data_num, bool value) {
     int index = data_num / 32;
     int bit = data_num % 32;
@@ -45,6 +56,14 @@ bool get_data_bitmap(int data_num) {
     int index = data_num / 32;
     int bit = data_num % 32;
     return data_bitmap[index] & (1 << bit);
+}
+
+void printDataBitmap() {
+    printf("data bitmap:\n");
+    for(int i = 0; i < sb->num_data_blocks; i++) {
+        printf("%d", get_data_bitmap(i));
+    }
+    printf("\n");
 }
 
 off_t get_inode_ptr(int inode_num) {
@@ -139,10 +158,11 @@ int add_dentry_to_block(char* block, struct wfs_dentry *dentry) {
     for(int i = 0; i < BLOCK_SIZE / sizeof(struct wfs_dentry); i++) {
         if(dentries[i].num == 0) {
             dentries[i] = *dentry;
-            return 0;
+            return i;
         }
     }
-    return 1;
+    printf("No space in block\n");
+    return -1;
 }
 
 
@@ -190,16 +210,20 @@ int add_directory(struct wfs_inode* inode, const char* name, mode_t mode, struct
         if(getBlockData(block_offsets[j], blockData) == 1) {
             int id = create_new_block();
             if(id == -1) {
+                printf("Failed to create new block\n");
                 return 1;
             }
             block_offsets[j] = get_data_ptr(id);
+            update_inode(inode);
         }
-        if(add_dentry_to_block(blockData, &dentry) == 0) {
+        int index = add_dentry_to_block(blockData, &dentry);
+        if(index != -1) {
             writeBlockData(block_offsets[j], blockData);
             return 0;
         }
     }
 
+    printf("No space in direct blocks\n");
     // check indirect blocks
     char indirectBlock[BLOCK_SIZE];
     if(getBlockData(block_offsets[IND_BLOCK - 1], indirectBlock) == 1) {
@@ -220,6 +244,7 @@ int add_directory(struct wfs_inode* inode, const char* name, mode_t mode, struct
             return 0;
         }
     }
+
 
     // no space in the indirect blocks
     return 1;
@@ -254,10 +279,16 @@ char** str_split(char* str, const char delim, int* length) {
 
 // 1 = fail, 0 = success
 int step_into(char* name, struct wfs_inode* current_inode, struct wfs_inode* result_inode) {
-    if(S_ISREG(current_inode->mode)) return 1;
+    if(S_ISREG(current_inode->mode)) {
+        printf("Not a directory\n");
+        return 1;
+    }
 
     struct wfs_dentry dentry;
-    if(get_dentry(current_inode->blocks, name, &dentry) == 1) return 1;
+    if(get_dentry(current_inode->blocks, name, &dentry) == 1) {
+        printf("Could not find %s\n", name);
+        return 1;
+    }
 
     get_inode(dentry.num, result_inode);
     return 0;
@@ -270,7 +301,6 @@ int walk_path(char **path, int length, struct wfs_inode* inode) {
     }
     get_inode(0, inode);
     if(length == 0) {
-        printf("Walked to root\n");
         return 0;
     }
     
@@ -284,7 +314,7 @@ int walk_path(char **path, int length, struct wfs_inode* inode) {
 
 
 static int wfs_getattr(const char *path, struct stat *stbuf) {
-    printf("getattr called on %s\n", path);
+    // printf("getattr called on %s\n", path);
 
     int result = 0; // Return 0 on success
     
@@ -293,9 +323,10 @@ static int wfs_getattr(const char *path, struct stat *stbuf) {
     char* dupPath = strdup(path);
     char** path_split = str_split(strdup(dupPath), '/', &path_len);
     
+    
     if(walk_path(path_split, path_len, &inode) == 1) {
         result = -ENOENT;
-        printf("Failed to walk path\n");
+        // printf("Failed to walk path\n");
         goto cleanup;
     }
 
@@ -327,6 +358,7 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t dev) {
 static int wfs_mkdir(const char *path, mode_t mode) {
     printf("mkdir called\n");
 
+    mode |= S_IFDIR;
     int result = 0; // Return 0 on success
     
     struct wfs_inode inode;
@@ -334,9 +366,6 @@ static int wfs_mkdir(const char *path, mode_t mode) {
     char* dupPath = strdup(path);
     char** path_split = str_split(strdup(dupPath), '/', &path_len);
 
-    for(int i = 0; i < path_len; i++) {
-        printf("path_split[%d]: %s\n", i, path_split[i]);
-    }
     
     if(walk_path(path_split, path_len - 1, &inode) == 1) {
         result = -ENOENT;
@@ -353,13 +382,14 @@ static int wfs_mkdir(const char *path, mode_t mode) {
     }
 
     struct wfs_inode new_inode;
-    if(add_directory(&inode, path, mode, &new_inode) == 1) {
+    if(add_directory(&inode, name, mode, &new_inode) == 1) {
         result = -1; // TODO: fix error code number;
         printf("Failed to add directory\n");
         goto cleanup;
     }
+    printDataBitmap();
 
-    printf("Added directory\n");
+    printf("Added directory result %d\n", result);
     printf("inode num: %d\n", new_inode.num);
     printf("inode mode: %d\n", new_inode.mode);
     printf("inode uid: %d\n", new_inode.uid);
@@ -369,6 +399,8 @@ static int wfs_mkdir(const char *path, mode_t mode) {
     printf("inode mtim: %ld\n", new_inode.mtim);
     printf("inode ctim: %ld\n", new_inode.ctim);
     printf("inode blocks: %ld\n", new_inode.blocks[0]);
+
+    printInodeBitmap();
 
     cleanup:
     free(dupPath);
@@ -399,7 +431,7 @@ static int wfs_write(const char *path, const char *buf, size_t size, off_t offse
 }
 
 static int wfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi) {
-    printf("readdir called\n");
+    printf("readdir called, path: %s\n", path);
 
     int result = 0;
     struct wfs_inode inode;
@@ -471,10 +503,9 @@ void initialize_superblock_bitmaps() {
     data_bitmap = (int*) (mmaps + sizeof(struct wfs_sb) + inode_bitmap_size);
 
     // print inode bitmap
-    for(int i = 0; i < sb->num_inodes; i++) {
-        printf("%d", get_inode_bitmap(i));
-    }
+    printInodeBitmap();
 }
+
 
 // example:
 /*

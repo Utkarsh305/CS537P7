@@ -1,4 +1,4 @@
-BINS = wfs mkfs mnt disk.img
+BINS = wfs mkfs
 CC = gcc
 TFLAGS = -std=gnu18 -g
 CFLAGS = -Wall -Werror -pedantic -std=gnu18 -g
@@ -13,4 +13,10 @@ test:
 	$(CC) $(TFLAGS) wfs.c $(FUSE_CFLAGS) -o wfs
 .PHONY: clean
 clean:
-	rm -rf $(BINS)
+	rm -rf $(BINS) mnt disk.img
+
+run: all
+	./create_disk.sh
+	./mkfs -d disk.img -i 32 -b 200
+	mkdir mnt
+	./wfs disk.img -f -s mnt
