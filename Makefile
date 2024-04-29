@@ -1,4 +1,4 @@
-BINS = wfs mkfs
+BINS = wfs mkfs mnt disk.img
 CC = gcc
 TFLAGS = -std=gnu18 -g
 CFLAGS = -Wall -Werror -pedantic -std=gnu18 -g

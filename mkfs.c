@@ -74,7 +74,7 @@ int main(int argc, char *argv[]) {
     off_t i_bitmap_ptr = sizeof(struct wfs_sb);
     off_t d_bitmap_ptr = i_bitmap_ptr + i_bitmap_size; // 1 bit per inode, rounded up to nearest byte
     off_t i_blocks_ptr = d_bitmap_ptr + d_bitmap_size; // 1 bit per block
-    off_t d_blocks_ptr = i_blocks_ptr + num_inodes * sizeof(struct wfs_inode);
+    off_t d_blocks_ptr = i_blocks_ptr + num_inodes * BLOCK_SIZE;
 
     // superblock
     struct wfs_sb sb = {
@@ -108,7 +108,7 @@ int main(int argc, char *argv[]) {
     // Todo: set root inode
     struct wfs_inode root_inode = {
         .num = 0,
-        .mode = S_IFDIR | 0755,
+        .mode = S_IFDIR,
         .uid = getuid(),
         .gid = getgid(),
         .size = 0,
@@ -120,7 +120,7 @@ int main(int argc, char *argv[]) {
     };
 
     // set inode bitmap first value to 1
-    write(fd, "\x80", 1);
+    write(fd, "\1", 1);
 
     // write root inode
     lseek(fd, i_blocks_ptr, SEEK_SET);
