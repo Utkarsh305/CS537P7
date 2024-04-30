@@ -105,7 +105,7 @@ void get_inode(int inode_num, struct wfs_inode* inode) {
 
 void update_inode(struct wfs_inode* inode) {
     lseek(disk_fd, get_inode_ptr(inode->num), SEEK_SET);
-    write(disk_fd, inode, BLOCK_SIZE);
+    write(disk_fd, inode, sizeof(struct wfs_inode));
 }
 
 // 1 = fail, 0 = success
@@ -134,7 +134,11 @@ int get_dentry(off_t *block_offsets, char *name, struct wfs_dentry *result_dentr
         }
     }
     
-    // recursively check indirect blocks
+    return 1;
+
+
+    // recursively check indirect blocks (not needed for this assignment)
+    /*
     char indirectBlock[BLOCK_SIZE];
     if(getBlockData(block_offsets[IND_BLOCK - 1], indirectBlock) == 1) {
         return 1;
@@ -151,6 +155,15 @@ int get_dentry(off_t *block_offsets, char *name, struct wfs_dentry *result_dentr
         
     }
     return 1;
+    */
+}
+
+void printDentriesInBlock(char* block) {
+    struct wfs_dentry *dentries = (struct wfs_dentry*) block;
+    for(int i = 0; i < BLOCK_SIZE / sizeof(struct wfs_dentry); i++) {
+        printf("dentry num: %d\n", dentries[i].num);
+        printf("dentry name: %s\n", dentries[i].name);
+    }
 }
 
 int add_dentry_to_block(char* block, struct wfs_dentry *dentry) {
@@ -158,6 +171,7 @@ int add_dentry_to_block(char* block, struct wfs_dentry *dentry) {
     for(int i = 0; i < BLOCK_SIZE / sizeof(struct wfs_dentry); i++) {
         if(dentries[i].num == 0) {
             dentries[i] = *dentry;
+            printf("Added dentry to block: %s\n", dentry->name);
             return i;
         }
     }
@@ -203,28 +217,34 @@ int add_directory(struct wfs_inode* inode, const char* name, mode_t mode, struct
     struct wfs_dentry dentry;
     strcpy(dentry.name, name);
     dentry.num = free_inode;
+
     // check direct blocks
-    char blockData[BLOCK_SIZE];
+    char blockData[BLOCK_SIZE] = {0};
     off_t *block_offsets = inode->blocks;
     for(int j = 0; j <= D_BLOCK; j++) {
         if(getBlockData(block_offsets[j], blockData) == 1) {
+
             int id = create_new_block();
             if(id == -1) {
                 printf("Failed to create new block\n");
                 return 1;
             }
+
             block_offsets[j] = get_data_ptr(id);
             update_inode(inode);
         }
+
         int index = add_dentry_to_block(blockData, &dentry);
         if(index != -1) {
             writeBlockData(block_offsets[j], blockData);
+            printDentriesInBlock(blockData);
             return 0;
         }
     }
 
     printf("No space in direct blocks\n");
-    // check indirect blocks
+    // check indirect blocks (not needed for this assignment)
+    /*
     char indirectBlock[BLOCK_SIZE];
     if(getBlockData(block_offsets[IND_BLOCK - 1], indirectBlock) == 1) {
         return 1;
@@ -244,6 +264,7 @@ int add_directory(struct wfs_inode* inode, const char* name, mode_t mode, struct
             return 0;
         }
     }
+    */
 
 
     // no space in the indirect blocks
@@ -451,12 +472,15 @@ static int wfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_
 
     char blockData[BLOCK_SIZE];
     for(int j = 0; j <= D_BLOCK; j++) {
+        memset(blockData, 0, BLOCK_SIZE);
+        printf("block offset: %ld\n", inode.blocks[j]);
         if(getBlockData(inode.blocks[j], blockData) == 1) {
             goto cleanup;
         }
         struct wfs_dentry *dentries = (struct wfs_dentry*) blockData;
         for(int i = 0; i < BLOCK_SIZE / sizeof(struct wfs_dentry); i++) {
             if(dentries[i].num != 0) {
+                printf("dentry name: %s\n", dentries[i].name);
                 filler(buf, dentries[i].name, NULL, 0);
             }
         }
@@ -499,8 +523,8 @@ void initialize_superblock_bitmaps() {
     }
 
     sb = (struct wfs_sb*) mmaps;
-    inode_bitmap = (int*) (mmaps + sizeof(struct wfs_sb));
-    data_bitmap = (int*) (mmaps + sizeof(struct wfs_sb) + inode_bitmap_size);
+    inode_bitmap = (int*) (mmaps + sb->i_bitmap_ptr);
+    data_bitmap = (int*) (mmaps + sb->d_bitmap_ptr);
 
     // print inode bitmap
     printInodeBitmap();

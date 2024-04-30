@@ -120,6 +120,7 @@ int main(int argc, char *argv[]) {
     };
 
     // set inode bitmap first value to 1
+    lseek(fd, i_bitmap_ptr, SEEK_SET);
     write(fd, "\1", 1);
 
     // write root inode
