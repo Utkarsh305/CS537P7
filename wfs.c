@@ -180,7 +180,7 @@ int add_dentry_to_block(char* block, struct wfs_dentry *dentry) {
 }
 
 
-int add_directory(struct wfs_inode* inode, const char* name, mode_t mode, struct wfs_inode* result_inode) {
+int add_inode(struct wfs_inode* parent_inode, const char* name, mode_t mode, struct wfs_inode* result_inode) {
     // search for a free inode
     int free_inode = -1;
     for(int i = 0; i < sb->num_inodes; i++) {
@@ -220,7 +220,7 @@ int add_directory(struct wfs_inode* inode, const char* name, mode_t mode, struct
 
     // check direct blocks
     char blockData[BLOCK_SIZE] = {0};
-    off_t *block_offsets = inode->blocks;
+    off_t *block_offsets = parent_inode->blocks;
     for(int j = 0; j <= D_BLOCK; j++) {
         if(getBlockData(block_offsets[j], blockData) == 1) {
 
@@ -231,7 +231,7 @@ int add_directory(struct wfs_inode* inode, const char* name, mode_t mode, struct
             }
 
             block_offsets[j] = get_data_ptr(id);
-            update_inode(inode);
+            update_inode(parent_inode);
         }
 
         int index = add_dentry_to_block(blockData, &dentry);
@@ -240,12 +240,15 @@ int add_directory(struct wfs_inode* inode, const char* name, mode_t mode, struct
             printDentriesInBlock(blockData);
             return 0;
         }
+    } 
+
+    if(S_ISDIR(parent_inode->mode)) { // directories don't use the indirect block
+        printf("Directory is full\n");
+        return 1;
     }
 
-    printf("No space in direct blocks\n");
-    // check indirect blocks (not needed for this assignment)
-    /*
-    char indirectBlock[BLOCK_SIZE];
+    // recursively check indirect blocks
+    char indirectBlock[BLOCK_SIZE] = {0};
     if(getBlockData(block_offsets[IND_BLOCK - 1], indirectBlock) == 1) {
         return 1;
     }
@@ -264,7 +267,7 @@ int add_directory(struct wfs_inode* inode, const char* name, mode_t mode, struct
             return 0;
         }
     }
-    */
+    
 
 
     // no space in the indirect blocks
@@ -333,6 +336,27 @@ int walk_path(char **path, int length, struct wfs_inode* inode) {
     return 0; // Return 0 on success
 }
 
+int create_inode(char** path, int path_len, int mode, struct wfs_inode* result_inode) {
+    struct wfs_inode inode;
+    if(walk_path(path, path_len - 1, &inode) == 1) return -ENOENT;
+    
+    char* name = path[path_len-1];
+
+    struct wfs_dentry dentry;
+    if(get_dentry(inode.blocks, name, &dentry) == 0) {
+        printf("Inode already exists\n");
+        return -EEXIST;
+    }
+
+    struct wfs_inode new_inode;
+    if(add_inode(&inode, name, mode, &new_inode) == 1) {
+        printf("Failed to add inode\n");
+        return -1; // TODO: fix error code number; Error likely due to no space in the inode
+    }
+    *result_inode = new_inode;
+    return 0;
+}
+
 
 static int wfs_getattr(const char *path, struct stat *stbuf) {
     // printf("getattr called on %s\n", path);
@@ -373,13 +397,33 @@ static int wfs_getattr(const char *path, struct stat *stbuf) {
 
 static int wfs_mknod(const char *path, mode_t mode, dev_t dev) {
     printf("mknod called\n");
-    return 0; // Return 0 on success
+   
+    mode |= __S_IFREG;
+    int result = 0;
+    
+    struct wfs_inode inode;
+    int path_len;
+    char* dupPath = strdup(path);
+    char** path_split = str_split(strdup(dupPath), '/', &path_len);
+
+    if(create_inode(path_split, path_len, mode, &inode) != 0) {
+        result = -1; // TODO: fix error code number;
+        printf("Failed to create directory\n");
+        goto cleanup;
+    }
+
+    cleanup:
+    free(dupPath);
+    free(path_split);
+
+
+	return result;
 }
 
 static int wfs_mkdir(const char *path, mode_t mode) {
     printf("mkdir called\n");
 
-    mode |= S_IFDIR;
+    mode |= __S_IFDIR;
     int result = 0; // Return 0 on success
     
     struct wfs_inode inode;
@@ -387,41 +431,11 @@ static int wfs_mkdir(const char *path, mode_t mode) {
     char* dupPath = strdup(path);
     char** path_split = str_split(strdup(dupPath), '/', &path_len);
 
-    
-    if(walk_path(path_split, path_len - 1, &inode) == 1) {
-        result = -ENOENT;
-        printf("Failed to walk path\n");
-        goto cleanup;
-    }
-    char* name = path_split[path_len-1];
-
-    struct wfs_dentry dentry;
-    if(get_dentry(inode.blocks, name, &dentry) == 0) {
-        result = -EEXIST;
-        printf("Directory already exists\n");
-        goto cleanup;
-    }
-
-    struct wfs_inode new_inode;
-    if(add_directory(&inode, name, mode, &new_inode) == 1) {
+    if(create_inode(path_split, path_len, mode, &inode) != 0) {
         result = -1; // TODO: fix error code number;
-        printf("Failed to add directory\n");
+        printf("Failed to create directory\n");
         goto cleanup;
     }
-    printDataBitmap();
-
-    printf("Added directory result %d\n", result);
-    printf("inode num: %d\n", new_inode.num);
-    printf("inode mode: %d\n", new_inode.mode);
-    printf("inode uid: %d\n", new_inode.uid);
-    printf("inode gid: %d\n", new_inode.gid);
-    printf("inode size: %ld\n", new_inode.size);
-    printf("inode atim: %ld\n", new_inode.atim);
-    printf("inode mtim: %ld\n", new_inode.mtim);
-    printf("inode ctim: %ld\n", new_inode.ctim);
-    printf("inode blocks: %ld\n", new_inode.blocks[0]);
-
-    printInodeBitmap();
 
     cleanup:
     free(dupPath);
