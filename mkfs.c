@@ -108,7 +108,7 @@ int main(int argc, char *argv[]) {
     // Todo: set root inode
     struct wfs_inode root_inode = {
         .num = 0,
-        .mode = S_IFDIR,
+        .mode = __S_IFDIR | 0755,
         .uid = getuid(),
         .gid = getgid(),
         .size = 0,
@@ -121,7 +121,7 @@ int main(int argc, char *argv[]) {
 
     // set inode bitmap first value to 1
     lseek(fd, i_bitmap_ptr, SEEK_SET);
-    write(fd, "\1", 1);
+    write(fd, "\x1", 1);
 
     // write root inode
     lseek(fd, i_blocks_ptr, SEEK_SET);
@@ -129,8 +129,7 @@ int main(int argc, char *argv[]) {
         perror("Failed to write root inode");
         close(fd);
         return 1;
-    }
-    
+    }    
 
     close(fd);
     return 0;

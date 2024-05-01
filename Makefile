@@ -13,10 +13,16 @@ test:
 	$(CC) $(TFLAGS) wfs.c $(FUSE_CFLAGS) -o wfs
 .PHONY: clean
 clean:
-	rm -rf $(BINS) mnt disk.img
+	-./umount.sh mnt
+	-rm -rf $(BINS) mnt disk.img
 
 run: all
 	./create_disk.sh
 	./mkfs -d disk.img -i 32 -b 200
 	mkdir mnt
 	./wfs disk.img -f -s mnt
+
+runtest: test_write.c
+	gcc -std=gnu18 -g test_write.c -o test_write
+	./test_write
+	
