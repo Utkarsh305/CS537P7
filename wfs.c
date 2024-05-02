@@ -18,6 +18,7 @@ int *data_bitmap;
 #define NUM_D_BLOCKS (D_BLOCK + 1)
 #define ID_INDIRECT(D) (D - IND_BLOCK)
 #define BIT_INDEX(num) (num % 32)
+#define MAX_DIRECT_BYTES NUM_D_BLOCKS * BLOCK_SIZE
 
 void set_inode_bitmap(int inode_num, bool value) {
     int index = inode_num / 32;
@@ -76,10 +77,22 @@ off_t get_data_ptr(int data_num) {
     return sb->d_blocks_ptr + data_num * BLOCK_SIZE;
 }
 
+// return num of success, -1 on failure
 int create_new_block() {
     for(int i = 0; i < sb->num_data_blocks; i++) {
         if(get_data_bitmap(i) == 0) {
-            set_data_bitmap(i, true);
+            set_data_bitmap(i, 1);
+            return i;
+        }
+    }
+    return -1;
+}
+
+// return num of success, -1 on failure
+int create_new_inode() {
+    for(int i = 0; i < sb->num_inodes; i++) {
+        if(get_inode_bitmap(i) == 0) {
+            set_inode_bitmap(i, 1);
             return i;
         }
     }
@@ -163,20 +176,10 @@ int add_dentry_to_block(char* block, struct wfs_dentry *dentry) {
 
 int add_inode(struct wfs_inode* parent_inode, const char* name, mode_t mode, struct wfs_inode* result_inode) {
     // search for a free inode
-    int free_inode = -1;
-    for(int i = 0; i < sb->num_inodes; i++) {
-        if(get_inode_bitmap(i) == 0) {
-            free_inode = i;
-            break;
-        }
-    }
-
+    int free_inode = create_new_inode();
     if(free_inode == -1) {
         return 1;
     }
-
-    // set inode bitmap
-    set_inode_bitmap(free_inode, true);
 
     // set inode
     struct wfs_inode new_inode = {0};
@@ -391,7 +394,6 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t dev) {
     free(dupPath);
     free(path_split);
 
-
 	return result;
 }
 
@@ -416,13 +418,83 @@ static int wfs_mkdir(const char *path, mode_t mode) {
     free(dupPath);
     free(path_split);
 
-
 	return result;
+}
+
+int unlink_helper(struct wfs_inode *parent, struct wfs_inode *child) {
+    // Decrease the link count of the child inode
+    child->nlinks--;
+    update_inode(child);
+
+    // If the link count is now zero, free the child inode
+    if (child->nlinks == 0) {
+        // Free any data blocks associated with the child inode
+        for (int i = 0; i < N_BLOCKS; i++) {
+            if (child->blocks[i] != 0) {
+                set_data_bitmap(ID_INDIRECT(child->blocks[i]), false);
+            }
+        }
+
+        // Free the inode
+        set_inode_bitmap(child->num, false);
+    }
+
+    // Remove the child dentry from the parent directory
+    struct wfs_dentry dentry;
+    if (get_dentry(parent->blocks, dentry.name, &dentry) == 0) {
+        char blockData[BLOCK_SIZE];
+
+        // Search direct blocks
+        for (int j = 0; j <= D_BLOCK; j++) {
+            if (parent->blocks[j] != 0) {
+                getBlockData(parent->blocks[j], blockData);
+
+                struct wfs_dentry *dentries = (struct wfs_dentry *)blockData;
+                for (int i = 0; i < BLOCK_SIZE / sizeof(struct wfs_dentry); i++) {
+                    if (dentries[i].num == dentry.num) {
+                        dentries[i].num = 0; // Mark the dentry as free
+                        writeBlockData(parent->blocks[j], blockData);
+                        parent->size -= sizeof(struct wfs_dentry);
+                        update_inode(parent);
+                        return 0;
+                    }
+                }
+            }
+        }
+    }
+
+    return -1; // Failed to remove the child dentry
 }
 
 static int wfs_unlink(const char *path) {
     printf("unlink called\n");
-    return 0; // Return 0 on success
+    int result = 0;
+    struct wfs_inode pareent_inode;
+    struct wfs_inode child_inode;
+    int path_len;
+    char* dupPath = strdup(path);
+    char** path_split = str_split(strdup(dupPath), '/', &path_len);
+
+    if(walk_path(path_split, path_len-1, &pareent_inode) == 1) {
+        result = -ENOENT;
+        printf("Failed to walk path\n");
+        goto cleanup;
+    }
+
+    if(step_into(path_split[path_len - 1], &pareent_inode, &child_inode) == 1){
+        result = -ENOENT;
+        printf("Failed step into child\n");
+         goto cleanup;
+    }
+
+    result = unlink_helper(&pareent_inode, &child_inode);
+
+    cleanup:
+    free(dupPath);
+    free(path_split);
+
+
+    return result; // Return 0 on success
 }
 
 static int wfs_rmdir(const char *path) {
@@ -451,21 +523,22 @@ int readDataFromBlock(char* buffer, size_t bufferSize, off_t offset, off_t direc
         return -1;
     }
 
+    printf("Reading %d bytes. Number: %d, Offset: %d, ptr: %ld\n", toRead, blockNumber, blockOffset, blockPtr);
     lseek(disk_fd, blockPtr + blockOffset, SEEK_SET);
     return read(disk_fd, buffer, toRead);
 }
 
 int read_from_file(char* buffer, size_t size, off_t offset, struct wfs_inode* inode) {
-    printf("A\n");
     if(offset < 0) {
         return 0;
     }
 
     char ind_block_ptrs[BLOCK_SIZE] = {0};
     // check if we will need to use indirect blocks
-    if(offset + size > (NUM_D_BLOCKS) * BLOCK_SIZE) { // 7 direct blocks * block_size is the max address for direct blocks
+    if(offset + size > MAX_DIRECT_BYTES && inode->size > MAX_DIRECT_BYTES) {
         printf("Using indirect block\n");
         if(inode->blocks[IND_BLOCK] == 0) {
+            printf("Indirect block not allocated\n");
             return -1;
         }else {
             getBlockData(inode->blocks[IND_BLOCK], ind_block_ptrs);
@@ -477,7 +550,7 @@ int read_from_file(char* buffer, size_t size, off_t offset, struct wfs_inode* in
     int read = 0;
     while(totalRead < size) {
         printf("Reading from block\n");
-        read = readDataFromBlock(buffer, size, totalRead + offset, inode->blocks, (off_t *)ind_block_ptrs);
+        read = readDataFromBlock(buffer + totalRead, size, offset + totalRead, inode->blocks, (off_t *)ind_block_ptrs);
         if(read == -1 || read == 0) {
             return totalRead;
         }
@@ -490,7 +563,7 @@ int read_from_file(char* buffer, size_t size, off_t offset, struct wfs_inode* in
 }
 
 static int wfs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
-    printf("read called\n");
+    printf("read called offset: %ld, size: %ld\n", offset, size);
 
     int result = 0;
     struct wfs_inode inode;
@@ -540,9 +613,10 @@ int writeDataToBlock(const char* buffer, size_t bufferSize, off_t offset, off_t 
     if(blockPtr == 0) {
         int id = create_new_block();
         if(id == -1) {
-            printf("Failed to create block");
+            printf("Failed to create block\n");
             return -1;
         }
+        printf("Created new block of id %d\n", id);
         blockPtr = get_data_ptr(id);
         if(blockNumber <= D_BLOCK) {
             directBlocks[blockNumber] = blockPtr;
@@ -550,10 +624,10 @@ int writeDataToBlock(const char* buffer, size_t bufferSize, off_t offset, off_t 
         }
         else {
             indBlockPtrs[ID_INDIRECT(blockNumber)] = blockPtr;
-
         }
     }
 
+    printf("Writing %d bytes. Number: %d, Offset: %d, ptr: %ld\n", toWrite, blockNumber, blockOffset, blockPtr);
     lseek(disk_fd, blockPtr + blockOffset, SEEK_SET);
     return write(disk_fd, buffer, toWrite);
 }
@@ -566,7 +640,10 @@ int write_to_file(const char* buffer,  off_t offset, size_t size, struct wfs_ino
 
     char ind_block_ptrs[BLOCK_SIZE] = {0};
     // check if we will need to use indirect blocks
-    if(offset + size > (NUM_D_BLOCKS) * BLOCK_SIZE) { // 7 direct blocks * block_size is the max address for direct blocks
+    bool flushIndirect = false;
+    printf("offset + size: %ld. size: %ld\n", offset + size, size);
+    if(offset + size > MAX_DIRECT_BYTES && inode->size + size > MAX_DIRECT_BYTES) { // 7 direct blocks * block_size is the max address for direct blocks
+        flushIndirect = true;
         printf("Using indirect block\n");
         if(inode->blocks[IND_BLOCK] == 0) {
             printf("Creating new indirect block\n");
@@ -575,15 +652,17 @@ int write_to_file(const char* buffer,  off_t offset, size_t size, struct wfs_ino
                 return -1;
             }
             inode->blocks[IND_BLOCK] = get_data_ptr(id);
-        }else {
-            getBlockData(inode->blocks[IND_BLOCK], ind_block_ptrs);
+            printf("Indirect block id: %d\n", id);
         }
+        getBlockData(inode->blocks[IND_BLOCK], ind_block_ptrs);
+        
     }
 
     int totalWritten = 0;
     int written = 0;
     while(totalWritten < size) {
-        written = writeDataToBlock(buffer, size, totalWritten + offset, inode->blocks, (off_t *)ind_block_ptrs, inode);
+        written = writeDataToBlock(buffer + totalWritten, size - totalWritten, totalWritten + offset, inode->blocks, (off_t *)ind_block_ptrs, inode);
+        printf("Written: %d\n", written);
         if(written == -1) {
             printf("Problem Writing to block");
             inode->size = offset + size;
@@ -594,8 +673,15 @@ int write_to_file(const char* buffer,  off_t offset, size_t size, struct wfs_ino
         totalWritten += written;
     }
 
+    if(flushIndirect) {
+        printf("Flushing indirect block\n");
+        writeBlockData(inode->blocks[IND_BLOCK], ind_block_ptrs);
+    }
+    
+
     // update inode
-    inode->size = offset + size;
+    if(inode->size < offset + size)
+        inode->size = offset + size;
     inode->mtim = time(NULL);
     update_inode(inode);
 
@@ -619,12 +705,12 @@ static int wfs_write(const char *path, const char *buf, size_t size, off_t offse
     }
 
     result = write_to_file(buf, offset, size, &inode);
-
+    printf("Number written in total: %d\n", result);
     cleanup:
     free(dupPath);
     free(path_split);
 
-    return result; // Return 0 on success
+    return result; // Return number of bytes on success
 }
 
 static int wfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi) {
@@ -649,7 +735,6 @@ static int wfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_
     char blockData[BLOCK_SIZE];
     for(int j = 0; j <= D_BLOCK; j++) {
         memset(blockData, 0, BLOCK_SIZE);
-        printf("block offset: %ld\n", inode.blocks[j]);
         if(getBlockData(inode.blocks[j], blockData) == 1) {
             goto cleanup;
         }

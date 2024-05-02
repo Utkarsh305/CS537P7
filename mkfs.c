@@ -6,30 +6,12 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include "wfs.h" 
+#include <sys/mman.h>
+
+
 
 size_t round_up(size_t num, size_t multiple) {
-    if (multiple == 0) {
-        return num;
-    }
-
-    size_t remainder = num % multiple;
-    if (remainder == 0){
-        return num;
-    }
-        
-
-    return num + multiple - remainder;
-}
-
-int write_zeros(int fd, size_t length) {
-    char *buffer = calloc(1, length);
-    if (!buffer) {
-        perror("Failed to allocate zero buffer");
-        return -1;
-    }
-    int written = write(fd, buffer, length);
-    free(buffer);
-    return written == length ? 0 : -1;
+    return num % multiple == 0 ? num : num + (multiple - (num % multiple));
 }
 
 /**
@@ -49,7 +31,7 @@ int main(int argc, char *argv[]) {
         if (strcmp(argv[i], "-d") == 0) {
             disk_img = argv[i + 1];
         } else if (strcmp(argv[i], "-i") == 0) {
-            num_inodes = atoi(argv[i + 1]);
+            num_inodes = round_up(atoi(argv[i + 1]), 32);
         } else if (strcmp(argv[i], "-b") == 0) {
             num_blocks = round_up(atoi(argv[i + 1]), 32);
         }
@@ -86,11 +68,8 @@ int main(int argc, char *argv[]) {
         .d_blocks_ptr = d_blocks_ptr
     };
 
-    if (write(fd, &sb, sizeof(sb)) != sizeof(sb)) {
-        perror("Failed to write superblock");
-        close(fd);
-        return 1;
-    }
+    char* memStart = mmap(NULL, sizeof(struct wfs_sb) + d_blocks_ptr, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    memcpy(memStart, &sb, sizeof(sb));
 
     // TODO: check if the max amount of memory that can be used is available on the disk image
     struct stat st;
@@ -112,7 +91,7 @@ int main(int argc, char *argv[]) {
         .uid = getuid(),
         .gid = getgid(),
         .size = 0,
-        .nlinks = 2,
+        .nlinks = 1,
         .atim = time(NULL),
         .mtim = time(NULL),
         .ctim = time(NULL),
@@ -120,16 +99,22 @@ int main(int argc, char *argv[]) {
     };
 
     // set inode bitmap first value to 1
+    *(memStart + sb.i_bitmap_ptr) |= 1;
+    /*
     lseek(fd, i_bitmap_ptr, SEEK_SET);
     write(fd, "\x1", 1);
+    */
 
     // write root inode
+    memcpy(memStart + sb.i_blocks_ptr, &root_inode, sizeof(root_inode));
+    /*
     lseek(fd, i_blocks_ptr, SEEK_SET);
     if (write(fd, &root_inode, sizeof(root_inode)) != sizeof(root_inode)) {
         perror("Failed to write root inode");
         close(fd);
         return 1;
-    }    
+    }
+    */    
 
     close(fd);
     return 0;
