@@ -254,7 +254,7 @@ int add_inode(struct wfs_inode* parent_inode, const char* name, mode_t mode, str
             int id = create_new_block();
             if(id == -1) {
                 printf("Failed to create new block\n");
-                return 1;
+                return -ENOSPC;
             }
 
             block_offsets[j] = get_data_ptr(id);
@@ -355,7 +355,7 @@ int create_inode(char** path, int path_len, int mode, struct wfs_inode* result_i
     struct wfs_inode new_inode;
     if(add_inode(&inode, name, mode, &new_inode) == 1) {
         printf("Failed to add inode\n");
-        return -1; // TODO: fix error code number; Error likely due to no space in the inode
+        return -ENOSPC;
     }
     *result_inode = new_inode;
     return 0;
@@ -427,8 +427,9 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t dev) {
     char* dupPath = strdup(path);
     char** path_split = str_split(strdup(dupPath), '/', &path_len);
 
-    if(create_inode(path_split, path_len, mode, &inode) != 0) {
-        result = -1; // TODO: fix error code number;
+    int create_inode_result = create_inode(path_split, path_len, mode, &inode);
+    if(create_inode_result != 0) {
+        result = create_inode_result; // TODO: fix error code number;
         printf("Failed to create directory\n");
         goto cleanup;
     }
@@ -451,8 +452,9 @@ static int wfs_mkdir(const char *path, mode_t mode) {
     char* dupPath = strdup(path);
     char** path_split = str_split(strdup(dupPath), '/', &path_len);
 
-    if(create_inode(path_split, path_len, mode, &inode) != 0) {
-        result = -1; // TODO: fix error code number;
+    int create_inode_result = create_inode(path_split, path_len, mode, &inode);
+    if(create_inode_result != 0) {
+        result = create_inode_result; // TODO: fix error code number;
         printf("Failed to create directory\n");
         goto cleanup;
     }
@@ -493,10 +495,8 @@ int unlink_helper(struct wfs_inode *parent, struct wfs_inode *child, char* child
     // Free the inode
     set_inode_bitmap(child->num, false);
     
-
     // Remove the child dentry from the parent directory
     if(remove_dentry(parent, childName) == 0) {
-        printf("Removed dentry\n"); 
         return 0;
     }
     return -1; // Failed to remove the child dentry
@@ -649,7 +649,7 @@ int writeDataToBlock(const char* buffer, size_t bufferSize, off_t offset, off_t 
         int id = create_new_block();
         if(id == -1) {
             printf("Failed to create block\n");
-            return -1;
+            return -ENOSPC;
         }
         printf("Created new block of id %d\n", id);
         blockPtr = get_data_ptr(id);
@@ -684,7 +684,7 @@ int write_to_file(const char* buffer,  off_t offset, size_t size, struct wfs_ino
             printf("Creating new indirect block\n");
             int id = create_new_block();
             if(id == -1) {
-                return -1;
+                return -ENOSPC;
             }
             inode->blocks[IND_BLOCK] = get_data_ptr(id);
             printf("Indirect block id: %d\n", id);
@@ -698,12 +698,14 @@ int write_to_file(const char* buffer,  off_t offset, size_t size, struct wfs_ino
     while(totalWritten < size) {
         written = writeDataToBlock(buffer + totalWritten, size - totalWritten, totalWritten + offset, inode->blocks, (off_t *)ind_block_ptrs, inode);
         printf("Written: %d\n", written);
-        if(written == -1) {
+        if(written == -ENOSPC || written == -1) {
             printf("Problem Writing to block");
             inode->size = offset + size;
             inode->mtim = time(NULL);
             update_inode(inode);
-            return totalWritten;
+            if(written == -1)
+                return -1;
+            else return -ENOSPC;
         }
         totalWritten += written;
     }
