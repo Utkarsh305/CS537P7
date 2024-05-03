@@ -69,6 +69,14 @@ void printDataBitmap() {
     printf("\n");
 }
 
+int get_inode_num(off_t inode_ptr) {
+    return (inode_ptr - sb->i_blocks_ptr) / BLOCK_SIZE;
+}
+
+int get_data_num(off_t data_ptr) {
+    return (data_ptr - sb->d_blocks_ptr) / BLOCK_SIZE;
+}
+
 off_t get_inode_ptr(int inode_num) {
     return sb->i_blocks_ptr + inode_num * BLOCK_SIZE;
 }
@@ -141,6 +149,9 @@ int get_dentry(off_t *block_offsets, char *name, struct wfs_dentry *result_dentr
     
     // Search direct blocks
     for(int j = 0; j <= D_BLOCK; j++) {
+        if(block_offsets[j] == 0) {
+            return 1;
+        }
         if(getBlockData(block_offsets[j], blockData) == 1) {
             return 1;
         }
@@ -149,6 +160,38 @@ int get_dentry(off_t *block_offsets, char *name, struct wfs_dentry *result_dentr
         }
     }
     
+    return 1;
+}
+
+int remove_dentry_from_block(char* block, char* name) {
+    struct wfs_dentry *dentries = (struct wfs_dentry*) block;
+    for(int i = 0; i < BLOCK_SIZE / sizeof(struct wfs_dentry); i++) {
+        if(strcmp(dentries[i].name, name) == 0) {
+            dentries[i].num = 0;
+            memset(dentries[i].name, 0, MAX_NAME);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+int remove_dentry(struct wfs_inode* parent, char* childName) {
+    char blockData[BLOCK_SIZE];
+    
+    // Search direct blocks
+    for(int j = 0; j <= D_BLOCK; j++) {
+        off_t block_offset = parent->blocks[j];
+        if(block_offset == 0) {
+            return 1;
+        }
+        if(getBlockData(block_offset, blockData) == 1) {
+            return 1;
+        }
+        if(remove_dentry_from_block(blockData, childName) == 0) {
+            writeBlockData(block_offset, blockData);
+            return 0;
+        }
+    }
     return 1;
 }
 
@@ -421,73 +464,66 @@ static int wfs_mkdir(const char *path, mode_t mode) {
 	return result;
 }
 
-int unlink_helper(struct wfs_inode *parent, struct wfs_inode *child) {
+int unlink_helper(struct wfs_inode *parent, struct wfs_inode *child, char* childName) {
     // Decrease the link count of the child inode
     child->nlinks--;
     update_inode(child);
+    if(child->nlinks != 0) {
+        return 0;
+    }
 
     // If the link count is now zero, free the child inode
-    if (child->nlinks == 0) {
-        // Free any data blocks associated with the child inode
-        for (int i = 0; i < N_BLOCKS; i++) {
-            if (child->blocks[i] != 0) {
-                set_data_bitmap(ID_INDIRECT(child->blocks[i]), false);
-            }
-        }
-
-        // Free the inode
-        set_inode_bitmap(child->num, false);
+    for (int i = 0; i < N_BLOCKS; i++) {
+        if (child->blocks[i] == 0) break;
+        set_data_bitmap(get_data_num(child->blocks[i]), false);
     }
+
+    // check of indirect block if child is a file
+    if(S_ISREG(child->mode) && child->blocks[IND_BLOCK] != 0) {
+        off_t ind_block_ptrs[BLOCK_SIZE / sizeof(off_t)];
+        getBlockData(child->blocks[IND_BLOCK], (char*) ind_block_ptrs);
+        for(int i = 0; i < BLOCK_SIZE / sizeof(off_t); i++) {
+            if(ind_block_ptrs[i] == 0) break;
+            set_data_bitmap(get_data_num(ind_block_ptrs[i]), false);
+        }
+    }
+
+
+
+    // Free the inode
+    set_inode_bitmap(child->num, false);
+    
 
     // Remove the child dentry from the parent directory
-    struct wfs_dentry dentry;
-    if (get_dentry(parent->blocks, dentry.name, &dentry) == 0) {
-        char blockData[BLOCK_SIZE];
-
-        // Search direct blocks
-        for (int j = 0; j <= D_BLOCK; j++) {
-            if (parent->blocks[j] != 0) {
-                getBlockData(parent->blocks[j], blockData);
-
-                struct wfs_dentry *dentries = (struct wfs_dentry *)blockData;
-                for (int i = 0; i < BLOCK_SIZE / sizeof(struct wfs_dentry); i++) {
-                    if (dentries[i].num == dentry.num) {
-                        dentries[i].num = 0; // Mark the dentry as free
-                        writeBlockData(parent->blocks[j], blockData);
-                        parent->size -= sizeof(struct wfs_dentry);
-                        update_inode(parent);
-                        return 0;
-                    }
-                }
-            }
-        }
+    if(remove_dentry(parent, childName) == 0) {
+        printf("Removed dentry\n"); 
+        return 0;
     }
-
     return -1; // Failed to remove the child dentry
 }
 
 static int wfs_unlink(const char *path) {
     printf("unlink called\n");
     int result = 0;
-    struct wfs_inode pareent_inode;
+    struct wfs_inode parent_inode;
     struct wfs_inode child_inode;
     int path_len;
     char* dupPath = strdup(path);
     char** path_split = str_split(strdup(dupPath), '/', &path_len);
 
-    if(walk_path(path_split, path_len-1, &pareent_inode) == 1) {
+    if(walk_path(path_split, path_len-1, &parent_inode) == 1) {
         result = -ENOENT;
         printf("Failed to walk path\n");
         goto cleanup;
     }
 
-    if(step_into(path_split[path_len - 1], &pareent_inode, &child_inode) == 1){
+    if(step_into(path_split[path_len - 1], &parent_inode, &child_inode) == 1){
         result = -ENOENT;
         printf("Failed step into child\n");
-         goto cleanup;
+        goto cleanup;
     }
 
-    result = unlink_helper(&pareent_inode, &child_inode);
+    result = unlink_helper(&parent_inode, &child_inode, path_split[path_len - 1]);
 
     cleanup:
     free(dupPath);
@@ -498,8 +534,7 @@ static int wfs_unlink(const char *path) {
 }
 
 static int wfs_rmdir(const char *path) {
-    printf("rmdir called\n");
-    return 0; // Return 0 on success
+    return wfs_unlink(path);
 }
 
 int readDataFromBlock(char* buffer, size_t bufferSize, off_t offset, off_t directBlocks[N_BLOCKS], off_t* indBlockPtrs) {
